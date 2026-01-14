@@ -1,0 +1,57 @@
+---
+- name: Collect interface/IP data from RHEL7
+  hosts: all
+  gather_facts: yes
+
+  vars:
+    combined_file: "{{ playbook_dir }}/../data/all_interfaces.json"
+
+  tasks:
+    - name: Build interface map for this host
+      set_fact:
+        iface_map: "{{ iface_map | default([]) + [ {
+          'name': item,
+          'ipv4': ansible_facts['ansible_' + item].ipv4 | default({}),
+          'ipv6': ansible_facts['ansible_' + item].ipv6 | default([]),
+          'mac': ansible_facts['ansible_' + item].macaddress | default(''),
+          'mtu': ansible_facts['ansible_' + item].mtu | default(''),
+          'vlan_id': (item.split('.')[-1] if '.' in item else None),
+          'parent': (item.split('.')[0] if '.' in item else None)
+        } ] }}"
+      loop: "{{ ansible_facts['ansible_interfaces'] }}"
+
+    - name: Ensure data directory exists on controller
+      file:
+        path: "{{ playbook_dir }}/../data"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+
+    - name: Load existing combined file if present
+      slurp:
+        src: "{{ combined_file }}"
+      register: combined
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: Initialize combined_data fact
+      set_fact:
+        combined_data: >-
+          {{
+            (combined.content | b64decode | from_json)
+            if (combined is defined and combined.content is defined)
+            else {}
+          }}
+      delegate_to: localhost
+      run_once: true
+
+    - name: Update combined_data with this host's interfaces
+      set_fact:
+        combined_data: "{{ combined_data | combine({ inventory_hostname: iface_map }, recursive=True) }}"
+      delegate_to: localhost
+
+    - name: Write updated combined file
+      copy:
+        content: "{{ combined_data | to_nice_json }}"
+        dest: "{{ combined_file }}"
+      delegate_to: localhost
